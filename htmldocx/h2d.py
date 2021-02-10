@@ -12,13 +12,16 @@ user can pass existing document object as arg
 
 How to deal with block level style applied over table elements? e.g. text align
 """
-import re, argparse
-import io, os
+import re
+import argparse
+import io
+import os
 import urllib.request
 from urllib.parse import urlparse
 from html.parser import HTMLParser
 
-import docx, docx.table
+import docx
+import docx.table
 from docx import Document
 from docx.shared import RGBColor, Pt, Inches
 from docx.enum.text import WD_COLOR, WD_ALIGN_PARAGRAPH
@@ -28,10 +31,12 @@ from bs4 import BeautifulSoup
 # values in inches
 INDENT = 0.25
 LIST_INDENT = 0.5
-MAX_INDENT = 5.5 # To stop indents going off the page
+MAX_INDENT = 5.5  # To stop indents going off the page
+
 
 def get_filename_from_url(url):
     return os.path.basename(urlparse(url).path)
+
 
 def is_url(url):
     """
@@ -40,6 +45,7 @@ def is_url(url):
     """
     parts = urlparse(url)
     return all([parts.scheme, parts.netloc, parts.path])
+
 
 def fetch_image(url):
     """
@@ -55,18 +61,22 @@ def fetch_image(url):
     except urllib.error.URLError:
         return None
 
+
 def remove_last_occurence(ls, x):
     ls.pop(len(ls) - ls[::-1].index(x) - 1)
 
+
 def remove_whitespace(string):
     string = re.sub(r'\s*\n\s*', ' ', string)
-    return re.sub(r'>\s{2+}<', '><', string)
+    return re.sub(r'>\s<', '><', string)
+
 
 def delete_paragraph(paragraph):
     # https://github.com/python-openxml/python-docx/issues/33#issuecomment-77661907
     p = paragraph._element
     p.getparent().remove(p)
     p._p = p._element = None
+
 
 fonts = {
     'b': 'bold',
@@ -79,6 +89,7 @@ fonts = {
     'sub': 'subscript',
     'th': 'bold',
 }
+
 
 class HtmlToDocx(HTMLParser):
 
@@ -100,9 +111,10 @@ class HtmlToDocx(HTMLParser):
             self.doc = document
         else:
             self.doc = Document()
-        self.bs = self.options['fix-html'] # whether or not to clean with BeautifulSoup
+        # whether or not to clean with BeautifulSoup
+        self.bs = self.options['fix-html']
         self.document = self.doc
-        self.include_tables = True #TODO add this option back in?
+        self.include_tables = True  # TODO add this option back in?
         self.include_images = self.options['images']
         self.include_styles = self.options['styles']
         self.paragraph = None
@@ -130,7 +142,8 @@ class HtmlToDocx(HTMLParser):
             units = re.sub(r'[0-9]+', '', margin)
             margin = int(re.sub(r'[a-z]+', '', margin))
             if units == 'px':
-                self.paragraph.paragraph_format.left_indent = Inches(min(margin // 10 * INDENT, MAX_INDENT))
+                self.paragraph.paragraph_format.left_indent = Inches(
+                    min(margin // 10 * INDENT, MAX_INDENT))
             # TODO handle non px units
 
     def add_styles_to_run(self, style):
@@ -141,7 +154,7 @@ class HtmlToDocx(HTMLParser):
         if 'background-color' in style:
             color = color = re.sub(r'[a-z()]+', '', style['background-color'])
             colors = [int(x) for x in color.split(',')]
-            self.run.font.highlight_color = WD_COLOR.GRAY_25 #TODO: map colors
+            self.run.font.highlight_color = WD_COLOR.GRAY_25  # TODO: map colors
 
     def parse_dict_string(self, string, separator=';'):
         new_string = string.replace(" ", '').split(separator)
@@ -154,15 +167,16 @@ class HtmlToDocx(HTMLParser):
         if list_depth:
             list_type = self.tags['list'][-1]
         else:
-            list_type = 'ul' # assign unordered if no tag
+            list_type = 'ul'  # assign unordered if no tag
 
         if list_type == 'ol':
             list_style = "List Number"
         else:
             list_style = 'List Bullet'
 
-        self.paragraph = self.doc.add_paragraph(style=list_style)            
-        self.paragraph.paragraph_format.left_indent = Inches(min(list_depth * LIST_INDENT, MAX_INDENT))
+        self.paragraph = self.doc.add_paragraph(style=list_style)
+        self.paragraph.paragraph_format.left_indent = Inches(
+            min(list_depth * LIST_INDENT, MAX_INDENT))
         self.paragraph.paragraph_format.line_spacing = 1
 
     def add_image_to_cell(self, cell, image):
@@ -200,7 +214,8 @@ class HtmlToDocx(HTMLParser):
                 self.doc.add_paragraph("<image: %s>" % src)
             else:
                 # avoid exposing filepaths in document
-                self.doc.add_paragraph("<image: %s>" % get_filename_from_url(src))
+                self.doc.add_paragraph("<image: %s>" %
+                                       get_filename_from_url(src))
         # add styles?
 
     def handle_table(self):
@@ -228,7 +243,7 @@ class HtmlToDocx(HTMLParser):
                 child_parser.add_html_to_cell(cell_html, docx_cell)
                 cell_col += 1
             cell_row += 1
-        
+
         # skip all tags until corresponding closing tag
         self.instances_to_skip = len(table_soup.find_all('table'))
         self.skip_tag = 'table'
@@ -253,7 +268,7 @@ class HtmlToDocx(HTMLParser):
             return
         elif tag == 'ol' or tag == 'ul':
             self.tags['list'].append(tag)
-            return # don't apply styles for now
+            return  # don't apply styles for now
         elif tag == 'br':
             self.run.add_break()
             return
@@ -261,29 +276,25 @@ class HtmlToDocx(HTMLParser):
         self.tags[tag] = current_attrs
         if tag == 'p':
             self.paragraph = self.doc.add_paragraph()
-                        
         elif tag == 'li':
             self.handle_li()
-            
         elif tag[0] == 'h' and len(tag) == 2:
             if isinstance(self.doc, docx.document.Document):
                 h_size = int(tag[1])
                 self.paragraph = self.doc.add_heading(level=min(h_size, 9))
             else:
                 self.paragraph = self.doc.add_paragraph()
-
         elif tag == 'img':
             self.handle_img(current_attrs)
             return
-        
         elif tag == 'table':
             self.handle_table()
             return
-        
+
         # set new run reference point in case of leading line breaks
         if tag == 'p' or tag == 'li':
             self.run = self.paragraph.add_run()
-        
+
         # add style
         if not self.include_styles:
             return
@@ -295,7 +306,7 @@ class HtmlToDocx(HTMLParser):
         if self.skip:
             if not tag == self.skip_tag:
                 return
-            
+
             if self.instances_to_skip > 0:
                 self.instances_to_skip -= 1
                 return
@@ -303,7 +314,7 @@ class HtmlToDocx(HTMLParser):
             self.skip = False
             self.skip_tag = None
             self.paragraph = None
-            
+
         if tag == 'span':
             if self.tags['span']:
                 self.tags['span'].pop()
@@ -339,7 +350,7 @@ class HtmlToDocx(HTMLParser):
             if 'style' in span:
                 style = self.parse_dict_string(span['style'])
                 self.add_styles_to_run(style)
-        
+
         # add font style
         for tag in self.tags:
             if tag in fonts:
@@ -363,7 +374,7 @@ class HtmlToDocx(HTMLParser):
             new_tables.append(table)
             nest = len(table.find_all('table'))
         return new_tables
-    
+
     def get_table_dimensions(self, table_soup):
         rows = table_soup.find_all('tr', recursive=False)
         cols = rows[0].find_all(['th', 'td'], recursive=False)
@@ -374,7 +385,7 @@ class HtmlToDocx(HTMLParser):
             self.include_tables = False
             return
             # find other way to do it, or require this dependency?
-        self.tables = self.ignore_nested_tables(self.soup.find_all('table'))  
+        self.tables = self.ignore_nested_tables(self.soup.find_all('table'))
         self.table_no = 0
 
     def run_process(self, html):
@@ -391,13 +402,15 @@ class HtmlToDocx(HTMLParser):
         if not isinstance(html, str):
             raise ValueError('First argument needs to be a %s' % str)
         elif not isinstance(document, docx.document.Document) and not isinstance(document, docx.table._Cell):
-            raise ValueError('Second argument needs to be a %s' % docx.document.Document)
+            raise ValueError('Second argument needs to be a %s' %
+                             docx.document.Document)
         self.set_initial_attrs(document)
         self.run_process(html)
 
     def add_html_to_cell(self, html, cell):
         if not isinstance(cell, docx.table._Cell):
-            raise ValueError('Second argument needs to be a %s' % docx.table._Cell)
+            raise ValueError('Second argument needs to be a %s' %
+                             docx.table._Cell)
         unwanted_paragraph = cell.paragraphs[0]
         delete_paragraph(unwanted_paragraph)
         self.set_initial_attrs(cell)
@@ -405,7 +418,7 @@ class HtmlToDocx(HTMLParser):
         # cells must end with a paragraph or will get message about corrupt file
         # https://stackoverflow.com/a/29287121
         if not self.doc.paragraphs:
-            self.doc.add_paragraph('')  
+            self.doc.add_paragraph('')
 
     def parse_html_file(self, filename_html, filename_docx=None):
         with open(filename_html, 'r') as infile:
@@ -417,18 +430,21 @@ class HtmlToDocx(HTMLParser):
             filename_docx = '%s/new_docx_file_%s' % (path, filename)
         self.doc.save('%s.docx' % filename_docx)
 
-if __name__=='__main__':
-    
-    arg_parser = argparse.ArgumentParser(description='Convert .html file into .docx file with formatting')
-    arg_parser.add_argument('filename_html', help='The .html file to be parsed')
+
+if __name__ == '__main__':
+
+    arg_parser = argparse.ArgumentParser(
+        description='Convert .html file into .docx file with formatting')
     arg_parser.add_argument(
-        'filename_docx', 
-        nargs='?', 
-        help='The name of the .docx file to be saved. Default new_docx_file_[filename_html]', 
+        'filename_html', help='The .html file to be parsed')
+    arg_parser.add_argument(
+        'filename_docx',
+        nargs='?',
+        help='The name of the .docx file to be saved. Default new_docx_file_[filename_html]',
         default=None
     )
-    arg_parser.add_argument('--bs', action='store_true', 
-        help='Attempt to fix html before parsing. Requires bs4. Default True')
+    arg_parser.add_argument('--bs', action='store_true',
+                            help='Attempt to fix html before parsing. Requires bs4. Default True')
 
     args = vars(arg_parser.parse_args())
     file_html = args.pop('filename_html')
