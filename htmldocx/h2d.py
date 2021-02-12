@@ -78,49 +78,34 @@ def delete_paragraph(paragraph):
     p._p = p._element = None
 
 
-fonts = {
-    'b': 'bold',
-    'strong': 'bold',
-    'em': 'italic',
-    'i': 'italic',
-    'u': 'underline',
-    's': 'strike',
-    'sup': 'superscript',
-    'sub': 'subscript',
-    'th': 'bold',
+font_styles = {
+    'b': {'font-weight': 'bold'},
+    'strong': {'font-weight': 'bold'},
+    'th': {'font-weight': 'bold'},
+    'em': {'font-style': 'italic'},
+    'i': {'font-style': 'italic'},
+    'u': {'text-decoration': 'underline'},
+    's': {'text-decoration': 'line-through'},
 }
+
+font_tags = ['b', 'strong', 'em', 'i', 'u', 's', 'sup', 'sub', 'th']
+block_tags = ['p', 'div']
 
 
 class HtmlToDocx(HTMLParser):
 
     def __init__(self):
         super().__init__()
-        self.options = {
-            'fix-html': True,
-            'images': True,
-            'tables': True,
-            'styles': True,
-        }
+        self.document = Document()
+        self.block = None
+        self.current_block = None
+        self.run_tags = {}
+        self.runs = []
+        self.add_column = True
 
     def set_initial_attrs(self, document=None):
-        self.tags = {
-            'span': [],
-            'list': [],
-        }
         if document:
             self.doc = document
-        else:
-            self.doc = Document()
-        # whether or not to clean with BeautifulSoup
-        self.bs = self.options['fix-html']
-        self.document = self.doc
-        self.include_tables = True  # TODO add this option back in?
-        self.include_images = self.options['images']
-        self.include_styles = self.options['styles']
-        self.paragraph = None
-        self.skip = False
-        self.skip_tag = None
-        self.instances_to_skip = 0
 
     def get_cell_html(self, soup):
         # Returns string of td element with opening and closing <td> tags removed
@@ -128,38 +113,55 @@ class HtmlToDocx(HTMLParser):
             return '\n'.join(str(soup).split('\n')[1:-1])
         return str(soup)[4:-5]
 
-    def add_styles_to_paragraph(self, style):
+    def format_block(self, style):
         if 'text-align' in style:
             align = style['text-align']
             if align == 'center':
-                self.paragraph.paragraph_format.alignment = WD_ALIGN_PARAGRAPH.CENTER
+                self.block.paragraph_format.alignment = WD_ALIGN_PARAGRAPH.CENTER
             elif align == 'right':
-                self.paragraph.paragraph_format.alignment = WD_ALIGN_PARAGRAPH.RIGHT
+                self.block.paragraph_format.alignment = WD_ALIGN_PARAGRAPH.RIGHT
             elif align == 'justify':
-                self.paragraph.paragraph_format.alignment = WD_ALIGN_PARAGRAPH.JUSTIFY
+                self.block.paragraph_format.alignment = WD_ALIGN_PARAGRAPH.JUSTIFY
         if 'margin-left' in style:
             margin = style['margin-left']
             units = re.sub(r'[0-9]+', '', margin)
             margin = int(re.sub(r'[a-z]+', '', margin))
             if units == 'px':
-                self.paragraph.paragraph_format.left_indent = Inches(
+                self.block.paragraph_format.left_indent = Inches(
                     min(margin // 10 * INDENT, MAX_INDENT))
             # TODO handle non px units
 
-    def add_styles_to_run(self, style):
+    def add_style_to_run(self, style, run):
         if 'color' in style:
             color = re.sub(r'[a-z()]+', '', style['color'])
             colors = [int(x) for x in color.split(',')]
-            self.run.font.color.rgb = RGBColor(*colors)
+            run.font.color.rgb = RGBColor(
+                *colors)
         if 'background-color' in style:
             color = color = re.sub(r'[a-z()]+', '', style['background-color'])
             colors = [int(x) for x in color.split(',')]
-            self.run.font.highlight_color = WD_COLOR.GRAY_25  # TODO: map colors
+            run.font.highlight_color = WD_COLOR.GRAY_25
+        if 'font-size' in style:
+            size = re.sub(r'[a-z()]+', '', style['font-size'])
+            run.font.size = Pt(int(size))
+        if 'font-weight' in style:
+            weight = style['font-weight']
+            if weight == 'bold':
+                run.bold = True
+        if 'font-style' in style:
+            sty = style['font-style']
+            if sty == 'italic':
+                run.italic = True
+        if 'text-decoration' in style:
+            if style['text-decoration'] == 'underline':
+                run.underline = True
+            if style['text-decoration'] == 'line-through':
+                run.font.strike = True
 
     def parse_dict_string(self, string, separator=';'):
-        new_string = string.replace(" ", '').split(separator)
-        string_dict = dict([x.split(':') for x in new_string if ':' in x])
-        return string_dict
+        string = string.replace(' ', '').split(separator)
+        parsed_dict = dict([x.split(':') for x in string if ':' in x])
+        return parsed_dict
 
     def handle_li(self):
         # check list stack to determine style and depth
@@ -186,7 +188,7 @@ class HtmlToDocx(HTMLParser):
         run.add_picture(image)
 
     def handle_img(self, current_attrs):
-        if not self.include_images:
+        if not self.options['include_images']:
             self.skip = True
             self.skip_tag = 'img'
             return
@@ -251,111 +253,55 @@ class HtmlToDocx(HTMLParser):
         self.table = None
 
     def handle_starttag(self, tag, attrs):
-        if self.skip:
+        style = dict(attrs).get('style')
+        if style:
+            style = self.parse_dict_string(style)
+        if tag in block_tags:
+            self.block = self.document.add_paragraph()
+            self.current_block = tag
+            if style:
+                self.format_block(style)
             return
-        if tag == 'head':
-            self.skip = True
-            self.skip_tag = tag
-            self.instances_to_skip = 0
-            return
-        elif tag == 'body':
-            return
+        if tag in font_tags:
+            style = font_styles[tag]
+        if tag == 'table':
+            self.block = self.document.add_table(0, 0)
+            self.current_block = tag
+        if tag == 'tr':
+            self.current_row = self.block.add_row()
+        if tag == 'td' and self.add_column:
+            self.block.add_column()
+        self.run_tags[tag] = {'style': style, 'runs': []}
 
-        current_attrs = dict(attrs)
-
-        if tag == 'span':
-            self.tags['span'].append(current_attrs)
-            return
-        elif tag == 'ol' or tag == 'ul':
-            self.tags['list'].append(tag)
-            return  # don't apply styles for now
-        elif tag == 'br':
-            self.run.add_break()
-            return
-
-        self.tags[tag] = current_attrs
-        if tag == 'p':
-            self.paragraph = self.doc.add_paragraph()
-        elif tag == 'li':
-            self.handle_li()
-        elif tag[0] == 'h' and len(tag) == 2:
-            if isinstance(self.doc, docx.document.Document):
-                h_size = int(tag[1])
-                self.paragraph = self.doc.add_heading(level=min(h_size, 9))
-            else:
-                self.paragraph = self.doc.add_paragraph()
-        elif tag == 'img':
-            self.handle_img(current_attrs)
-            return
-        elif tag == 'table':
-            self.handle_table()
-            return
-
-        # set new run reference point in case of leading line breaks
-        if tag == 'p' or tag == 'li':
-            self.run = self.paragraph.add_run()
-
-        # add style
-        if not self.include_styles:
-            return
-        if 'style' in current_attrs and self.paragraph:
-            style = self.parse_dict_string(current_attrs['style'])
-            self.add_styles_to_paragraph(style)
-
-    def handle_endtag(self, tag):
-        if self.skip:
-            if not tag == self.skip_tag:
-                return
-
-            if self.instances_to_skip > 0:
-                self.instances_to_skip -= 1
-                return
-
-            self.skip = False
-            self.skip_tag = None
-            self.paragraph = None
-
-        if tag == 'span':
-            if self.tags['span']:
-                self.tags['span'].pop()
-                return
-        elif tag == 'ol' or tag == 'ul':
-            remove_last_occurence(self.tags['list'], tag)
-            return
-        elif tag == 'a':
-            link = self.tags.pop(tag)
-            href = link['href']
-            self.paragraph.add_run('<link: %s>' % href)
-            return
-        elif tag == 'table':
-            self.table_no += 1
-            self.table = None
-            self.doc = self.document
-            self.paragraph = None
-
-        if tag in self.tags:
-            self.tags.pop(tag)
-        # maybe set relevant reference to None?
+    def handle_startendtag(self, tag, attrs):
+        # style = dict(attrs).get('style')
+        # if style:
+        #     style = self.parse_dict_string(style)
+        if tag == 'br':
+            self.handle_data('\n')
 
     def handle_data(self, data):
-        if self.skip:
+        if self.current_row:
+            self.current_row.cells[-1].add_paragraph(data)
             return
+        if not self.block:
+            self.block = self.doc.add_paragraph()
+        run = self.block.add_run(data)
+        keys = self.run_tags.keys()
+        if len(keys) == 0:
+            return
+        for tag in keys:
+            self.run_tags[tag]['runs'].append(run)
 
-        if not self.paragraph:
-            self.paragraph = self.doc.add_paragraph()
-
-        self.run = self.paragraph.add_run(data)
-        spans = self.tags['span']
-        for span in spans:
-            if 'style' in span:
-                style = self.parse_dict_string(span['style'])
-                self.add_styles_to_run(style)
-
-        # add font style
-        for tag in self.tags:
-            if tag in fonts:
-                font_style = fonts[tag]
-                setattr(self.run.font, font_style, True)
+    def handle_endtag(self, tag):
+        if tag in block_tags or tag == 'tbody':
+            return
+        if tag == 'tr':
+            self.add_column = False
+            return
+        for run in self.run_tags[tag]['runs']:
+            self.add_style_to_run(self.run_tags[tag]['style'], run)
+        self.run_tags.pop(tag)
 
     def ignore_nested_tables(self, tables_soup):
         """
@@ -382,30 +328,22 @@ class HtmlToDocx(HTMLParser):
 
     def get_tables(self):
         if not hasattr(self, 'soup'):
-            self.include_tables = False
+            self.options['include_tables'] = False
             return
             # find other way to do it, or require this dependency?
         self.tables = self.ignore_nested_tables(self.soup.find_all('table'))
         self.table_no = 0
 
     def run_process(self, html):
-        if self.bs and BeautifulSoup:
+        # if self.options['fix_html'] and BeautifulSoup:
+        if BeautifulSoup:
             self.soup = BeautifulSoup(html, 'html.parser')
             html = remove_whitespace(str(self.soup))
         else:
             html = remove_whitespace(html)
-        if self.include_tables:
-            self.get_tables()
+        # if self.options['include_tables']:
+        #     self.get_tables()
         self.feed(html)
-
-    def add_html_to_document(self, html, document):
-        if not isinstance(html, str):
-            raise ValueError('First argument needs to be a %s' % str)
-        elif not isinstance(document, docx.document.Document) and not isinstance(document, docx.table._Cell):
-            raise ValueError('Second argument needs to be a %s' %
-                             docx.document.Document)
-        self.set_initial_attrs(document)
-        self.run_process(html)
 
     def add_html_to_cell(self, html, cell):
         if not isinstance(cell, docx.table._Cell):
@@ -420,15 +358,24 @@ class HtmlToDocx(HTMLParser):
         if not self.doc.paragraphs:
             self.doc.add_paragraph('')
 
-    def parse_html_file(self, filename_html, filename_docx=None):
-        with open(filename_html, 'r') as infile:
-            html = infile.read()
-        self.set_initial_attrs()
+    def add_html_to_document(self, html, document):
+        if not isinstance(html, str):
+            raise ValueError('First argument needs to be a %s' % str)
+        elif not isinstance(document, docx.document.Document) and not isinstance(document, docx.table._Cell):
+            raise ValueError('Second argument needs to be a %s' %
+                             docx.document.Document)
+        self.set_initial_attrs(document)
         self.run_process(html)
-        if not filename_docx:
-            path, filename = os.path.split(filename_html)
-            filename_docx = '%s/new_docx_file_%s' % (path, filename)
-        self.doc.save('%s.docx' % filename_docx)
+
+    def from_file(self, file_path, doc_name=None):
+        with open(file_path, 'r') as infile:
+            html = infile.read()
+        self.run_process(html)
+        if not doc_name:
+            path, file_name = os.path.split(file_path)
+            file_name = file_name.split('.')[0]
+            doc_name = '%s/new_%s' % ('.', file_name)
+        self.document.save('%s.docx' % doc_name)
 
 
 if __name__ == '__main__':
