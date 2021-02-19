@@ -78,6 +78,10 @@ def delete_paragraph(paragraph):
     p._p = p._element = None
 
 
+def pixels_to_inch(pixels: float):
+    return pixels * 0.0104166667
+
+
 font_styles = {
     'b': {'font-weight': 'bold'},
     'strong': {'font-weight': 'bold'},
@@ -86,9 +90,11 @@ font_styles = {
     'i': {'font-style': 'italic'},
     'u': {'text-decoration': 'underline'},
     's': {'text-decoration': 'line-through'},
+    'sup': {'script-style': 'superscript'},
+    'sub': {'script-style': 'subscript'},
 }
 
-font_tags = ['b', 'strong', 'em', 'i', 'u', 's', 'sup', 'sub', 'th']
+font_tags = ['b', 'strong', 'th', 'em', 'i', 'u', 's', 'sup', 'sub']
 block_tags = ['p', 'div']
 paragraph_styles = {
     'ol': 'List Number',
@@ -103,7 +109,7 @@ class HtmlToDocx(HTMLParser):
         self.document = Document()
         self.block = None
         self.current_block = None
-        self.run_tags = {}
+        self.run_tags = []
         self.runs = []
         self.add_column = True
 
@@ -157,6 +163,11 @@ class HtmlToDocx(HTMLParser):
                 run.underline = True
             if style['text-decoration'] == 'line-through':
                 run.font.strike = True
+        if 'script-style' in style:
+            if style['script-style'] == 'superscript':
+                run.font.superscript = True
+            if style['script-style'] == 'subscript':
+                run.font.subscript = True
 
     def parse_dict_string(self, string, separator=';'):
         string = string.replace(' ', '').split(separator)
@@ -164,19 +175,29 @@ class HtmlToDocx(HTMLParser):
         return parsed_dict
 
     def add_img(self, current_attrs):
-        src = dict(current_attrs).get('src')
+        current_attrs = dict(current_attrs)
+        src = current_attrs.get('src')
         if is_url(src):
             try:
                 image = fetch_image(src)
             except urllib.error.URLError:
                 image = None
         else:
-            image = src
+            image = '../writingartist/writing_artist/'+src
         # add image to doc
         if image:
             try:
-                img_run = self.document.add_paragraph().add_run()
-                img_run.add_picture(image, None, None)
+                if current_attrs.get('style'):
+                    style = self.parse_dict_string(current_attrs.get('style'))
+                    width = style.get('width')
+                    if not width:
+                        width = 200
+                    if width.endswith('px'):
+                        width = float(width.rstrip('px'))
+                    width = pixels_to_inch(width)
+                # img_run = self.document.add_paragraph().add_run()
+                # img_run.add_picture(image, None, None)
+                self.document.add_picture(image, width=Inches(width))
             except FileNotFoundError:
                 image = None
         if not image:
@@ -225,7 +246,7 @@ class HtmlToDocx(HTMLParser):
             if style:
                 self.format_block(style)
             return
-        self.run_tags[tag] = {'style': style, 'runs': []}
+        self.run_tags.append({'style': style, 'runs': []})
 
     def handle_data(self, data):
         if self.current_block == 'table':
@@ -237,11 +258,10 @@ class HtmlToDocx(HTMLParser):
         if not self.block:
             self.block = self.document.add_paragraph()
         run = self.block.add_run(data)
-        keys = self.run_tags.keys()
-        if len(keys) == 0:
+        if len(self.run_tags) == 0:
             return
-        for tag in keys:
-            self.run_tags[tag]['runs'].append(run)
+        for i in range(len(self.run_tags)):
+            self.run_tags[i]['runs'].append(run)
 
     def handle_endtag(self, tag):
         if tag in (*block_tags, 'tbody', 'ol', 'ul', 'li'):
@@ -249,9 +269,9 @@ class HtmlToDocx(HTMLParser):
         if tag == 'table':
             self.tables.pop(0)
             return
-        for run in self.run_tags[tag]['runs']:
-            self.add_style_to_run(self.run_tags[tag]['style'], run)
-        self.run_tags.pop(tag)
+        for run in self.run_tags[-1]['runs']:
+            self.add_style_to_run(self.run_tags[-1]['style'], run)
+        self.run_tags.pop(-1)
 
     def handle_startendtag(self, tag, attrs):
         if tag == 'br':
@@ -282,7 +302,7 @@ class HtmlToDocx(HTMLParser):
         #     path, file_name = os.path.split(file_path)
         #     file_name = file_name.split('.')[0]
         #     doc_name = '%s/new_%s' % ('.', file_name)
-        self.document.save('./my_tests/xxxxx.docx')
+        self.document.save('./tests/outputs/xxxxx.docx')
 
     def add_html_to_cell(self, html, cell):
         if not isinstance(cell, docx.table._Cell):
